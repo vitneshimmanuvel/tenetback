@@ -150,19 +150,29 @@ app.post('/api/admin/register', async (req, res) => {
   }
 });
 
-// Admin login
+// Admin login - CORRECTED RESPONSE FORMAT
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
   
   try {
+    console.log('Admin login attempt:', { email }); // Debug log
+    
     const user = await findUser(email.toLowerCase());
     if (!user || user.role !== 'admin') {
-      return res.status(401).json({ error: 'Invalid admin credentials' });
+      console.log('Admin login failed: Invalid credentials');
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid admin credentials' 
+      });
     }
 
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
-      return res.status(401).json({ error: 'Invalid admin credentials' });
+      console.log('Admin login failed: Wrong password');
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid admin credentials' 
+      });
     }
 
     const adminData = {
@@ -172,16 +182,24 @@ app.post('/api/admin/login', async (req, res) => {
       role: user.role
     };
 
-    console.log(`Admin login successful: ${email}`);
-    res.json({ 
+    console.log(`✅ Admin login successful: ${email}`);
+    
+    // ✅ CORRECT RESPONSE FORMAT FOR FRONTEND
+    return res.status(200).json({ 
+      success: true,
       message: 'Admin login successful',
       admin: adminData
     });
+    
   } catch (err) {
-    console.error('Admin login error:', err);
-    res.status(500).json({ error: 'Login failed' });
+    console.error('❌ Admin login error:', err);
+    return res.status(500).json({ 
+      success: false,
+      error: 'Login failed - server error' 
+    });
   }
 });
+
 
 // Get admin dashboard stats
 app.get('/api/admin/dashboard-stats', async (req, res) => {
@@ -334,6 +352,124 @@ app.post('/api/landlord/register', async (req, res) => {
     res.status(500).json({ error: 'Registration failed' });
   }
 });
+// Verify/approve tenant - ENHANCED WITH EMAIL NOTIFICATIONS
+// Verify/approve tenant - WITH DOCUMENT CHECK AND EMAIL NOTIFICATIONS
+// REPLACE your /api/admin/verify-tenant/:id endpoint with this:
+app.post('/api/admin/verify-tenant/:id', async (req, res) => {
+  const { id } = req.params;
+  const { approve } = req.body;
+  
+  try {
+    if (approve) {
+      // APPROVE: Set admin_approved = true
+      const tenantResult = await pool.query(
+        'SELECT name, email FROM tenants WHERE id = $1',
+        [id]
+      );
+      
+      if (tenantResult.rows.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Tenant not found' 
+        });
+      }
+
+      const tenant = tenantResult.rows[0];
+
+      // Update tenant to approved
+      await pool.query('UPDATE tenants SET admin_approved = true WHERE id = $1', [id]);
+      
+      // Send approval email
+      try {
+        const mailOptions = {
+          from: process.env.EMAIL_USER,
+          to: tenant.email,
+          subject: 'Account Approved - Welcome to Tenancy App!',
+          text: `Dear ${tenant.name},
+
+Congratulations! Your tenant account has been approved by our admin team.
+
+Your verification documents have been successfully reviewed and accepted.
+
+You can now:
+- Log in to your tenant dashboard
+- View your rating history  
+- Update your profile
+
+Welcome to Tenancy App!
+
+Best regards,
+Tenancy App Team`
+        };
+        
+        await sendEmail(mailOptions);
+        console.log(`✅ Tenant approval email sent to ${tenant.email}`);
+      } catch (emailError) {
+        console.error('❌ Failed to send approval email:', emailError);
+      }
+      
+      console.log(`Tenant ${id} approved successfully`);
+      
+    } else {
+      // REJECT: Get tenant info before deletion
+      const tenantResult = await pool.query(
+        'SELECT name, email FROM tenants WHERE id = $1',
+        [id]
+      );
+      
+      if (tenantResult.rows.length > 0) {
+        const tenant = tenantResult.rows[0];
+        
+        // Send rejection email BEFORE deletion
+        try {
+          const mailOptions = {
+            from: process.env.EMAIL_USER,
+            to: tenant.email,
+            subject: 'Tenancy App Registration Declined',
+            text: `Dear ${tenant.name},
+
+We regret to inform you that your tenant account registration has been declined.
+
+This decision was made after reviewing your verification documents. The documents may not meet our verification requirements.
+
+Possible reasons:
+- Document quality issues
+- Information mismatch
+- Incomplete documentation
+- Policy requirements not met
+
+If you believe this is an error or would like to reapply with updated documents, please register again with clear, valid identification documents.
+
+Thank you for your interest in Tenancy App.
+
+Best regards,
+Tenancy App Team`
+          };
+          
+          await sendEmail(mailOptions);
+          console.log(`✅ Tenant rejection email sent to ${tenant.email}`);
+        } catch (emailError) {
+          console.error('❌ Failed to send rejection email:', emailError);
+        }
+      }
+      
+      // Delete tenant completely
+      await pool.query('DELETE FROM tenants WHERE id = $1', [id]);
+      console.log(`Tenant ${id} rejected and deleted from database`);
+    }
+    
+    res.json({ 
+      success: true, 
+      message: approve ? 'Tenant approved and notification sent' : 'Tenant rejected and removed from system' 
+    });
+    
+  } catch (err) {
+    console.error('Verify tenant error:', err);
+    res.status(500).json({ error: 'Failed to process tenant verification' });
+  }
+});
+
+
 // Tenant registration
 // Tenant registration - CORRECTED VERSION
 app.post('/api/tenant/register', async (req, res) => {
@@ -1218,6 +1354,7 @@ app.get('/api/landlord/properties/:landlordId', async (req, res) => {
 // ===================== GENERAL ENDPOINTS =====================
 
 // Login endpoint
+// Login endpoint - UPDATED TO CHECK TENANT ADMIN APPROVAL
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   
@@ -1241,6 +1378,16 @@ app.post('/api/auth/login', async (req, res) => {
         requiresVerification: true,
         isVerified: false,
         message: 'Check your email for OTP verification'
+      });
+    }
+
+    // ✅ NEW: Check if tenant needs admin approval (AFTER email verification)
+    if (user.role === 'tenant' && user.verified && !user.admin_approved) {
+      return res.status(403).json({
+        error: 'Account pending admin approval',
+        requiresApproval: true,
+        isVerified: true,
+        message: 'Your account is waiting for admin verification. Please upload your verification documents if you haven\'t already.'
       });
     }
 
@@ -1281,7 +1428,8 @@ app.post('/api/auth/login', async (req, res) => {
         firstName: user.first_name,
         lastName: user.last_name,
         tenancyId: user.tenancy_id,
-        verified: user.verified 
+        verified: user.verified,
+        adminApproved: user.admin_approved  // ✅ Include admin approval status
       }),
       ...(user.role === 'landlord' && { 
         address: user.address,
@@ -1303,6 +1451,35 @@ app.post('/api/auth/login', async (req, res) => {
     res.status(500).json({ error: 'Login failed' });
   }
 });
+
+// Get pending tenant verifications - ONLY TENANTS WITH DOCUMENTS
+// Get pending tenant verifications - ONLY TENANTS WITH DOCUMENTS
+// Get pending tenant verifications - ONLY TENANTS WITH DOCUMENTS
+// REPLACE your /api/admin/pending-tenants endpoint with this:
+app.get('/api/admin/pending-tenants', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id, name, email, phone, tenancy_id, 
+        document_type, document_url, created_at, verified, admin_approved
+      FROM tenants 
+      WHERE admin_approved = false
+        AND document_url IS NOT NULL 
+        AND document_url != ''
+        AND document_type IS NOT NULL
+        AND document_type != ''
+      ORDER BY created_at DESC
+    `);
+    
+    console.log(`Found ${result.rows.length} tenants pending admin verification with documents`);
+    res.json({ tenants: result.rows });
+  } catch (err) {
+    console.error('Get pending tenants error:', err);
+    res.status(500).json({ error: 'Failed to get pending tenants', tenants: [] });
+  }
+});
+
+
 
 // Send OTP endpoint
 app.post('/api/auth/send-otp', async (req, res) => {
@@ -2034,7 +2211,6 @@ app.get('/api/tenant/ratings/:id', async (req, res) => {
   }
 });
 
-// ===================== ENHANCED SEARCH ENDPOINTS =====================
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -2042,7 +2218,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// 404 handler
 app.use((req, res) => {
   console.log(`404 - Route not found: ${req.method} ${req.path}`);
   res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
@@ -2087,7 +2262,7 @@ app.listen(PORT, () => {
   console.log('GET /api/landlord/search-history/:landlordId - Get search history');
   console.log('POST /api/landlord/rate-tenant - Rate tenant');
   
-  console.log('\n🏘️ TENANT ENDPOINTS:');
+  console.log('\n TENANT ENDPOINTS:');
   console.log('POST /api/tenant/register - Tenant registration (with OTP verification)');
   console.log('GET /api/tenant/ratings/:id - Get tenant ratings (enhanced with first_name, last_name)');
 });
