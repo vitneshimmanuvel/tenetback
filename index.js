@@ -25,6 +25,89 @@ pool.query('SELECT NOW()', (err, res) => {
   }
 });
 
+
+
+// Add these imports after your existing requires
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
+// Configure Cloudinary with your exact env variable names
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,        // matches your CLOUD_NAME
+  api_key: process.env.CLOUDINARY_KEY,       // matches your CLOUDINARY_KEY  
+  api_secret: process.env.CLOUDINARY_SECRET, // matches your CLOUDINARY_SECRET
+});
+
+// Test Cloudinary connection
+console.log('🌤️  Cloudinary Config:', {
+  cloud_name: process.env.CLOUD_NAME ? '✅ Set' : '❌ Missing',
+  api_key: process.env.CLOUDINARY_KEY ? '✅ Set' : '❌ Missing',
+  api_secret: process.env.CLOUDINARY_SECRET ? '✅ Set' : '❌ Missing'
+});
+
+// Configure Cloudinary storage for multer
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'tenant_documents', // Folder name in Cloudinary
+    allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'], // Allowed file types
+    resource_type: 'auto', // Automatically detect file type
+    transformation: [{ width: 1000, height: 1000, crop: 'limit' }], // Optional: resize images
+  },
+});
+
+// Configure multer with Cloudinary storage
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    console.log('📎 File upload attempt:', {
+      fieldname: file.fieldname,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      size: file.size
+    });
+    
+    // Check file type
+    if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only images and PDFs are allowed.'), false);
+    }
+  }
+});
+
+// Add error handling middleware for multer
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        message: 'File too large. Maximum size allowed is 10MB.'
+      });
+    }
+    if (error.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({
+        success: false,
+        message: 'Unexpected file field. Please use "document" as field name.'
+      });
+    }
+  }
+  
+  if (error.message === 'Invalid file type. Only images and PDFs are allowed.') {
+    return res.status(400).json({
+      success: false,
+      message: error.message
+    });
+  }
+  
+  next(error);
+});
+
+
 // Enhanced nodemailer configuration
 const createTransporter = () => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
@@ -466,6 +549,187 @@ Tenancy App Team`
   } catch (err) {
     console.error('Verify tenant error:', err);
     res.status(500).json({ error: 'Failed to process tenant verification' });
+  }
+});
+
+
+
+// Tenant registration with document upload - CORRECTED FOR YOUR TABLE
+app.post('/api/tenant/register-with-document', upload.single('document'), async (req, res) => {
+  try {
+    const { name, email, phone, password, documentType } = req.body;
+    
+    console.log('📄 Tenant registration with document started');
+    console.log('📋 Form data:', { name, email, phone, documentType });
+    console.log('📎 File info:', req.file ? req.file.filename : 'No file');
+    
+    // Validate required fields
+    if (!name || !email || !phone || !password || !documentType) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please fill all required fields'
+      });
+    }
+    
+    // Validate file upload
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload a document (ID card, passport, or driver license)'
+      });
+    }
+    
+    const emailLower = email.toLowerCase();
+    
+    // Validate email format
+    const emailRegex = /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/;
+    if (!emailRegex.test(emailLower)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please enter a valid email address'
+      });
+    }
+    
+    // Check if tenant already exists
+    const existingUser = await findUser(emailLower);
+    if (existingUser) {
+      // Delete uploaded file if user already exists
+      if (req.file && req.file.public_id) {
+        try {
+          await cloudinary.uploader.destroy(req.file.public_id);
+        } catch (deleteError) {
+          console.error('Failed to delete uploaded file:', deleteError);
+        }
+      }
+      
+      return res.status(409).json({
+        success: false,
+        message: 'Email already registered. Please use a different email or login instead.'
+      });
+    }
+    
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // Generate unique 8-digit tenant ID
+    const tenancyId = Math.floor(10000000 + Math.random() * 90000000).toString();
+    
+    // Get Cloudinary file info
+    const documentUrl = req.file.path; // Cloudinary URL
+    const documentPublicId = req.file.public_id; // For future deletion if needed
+    
+    console.log('☁️ Cloudinary upload successful:', documentUrl);
+    
+    // ✅ CORRECTED: Insert matching your exact table columns
+    const insertResult = await pool.query(
+      `INSERT INTO tenants (
+        name, email, phone, password_hash, tenancy_id, role, verified, 
+        average_rating, total_ratings, admin_verified, document_type, 
+        document_url, document_public_id, admin_approved
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       RETURNING id, tenancy_id`,
+      [
+        name,                    // name
+        emailLower,             // email
+        phone,                  // phone
+        hashedPassword,         // password_hash
+        tenancyId,             // tenancy_id
+        'tenant',              // role
+        true,                  // verified (set to true since they uploaded docs)
+        0.0,                   // average_rating (default)
+        0,                     // total_ratings (default)
+        false,                 // admin_verified (waiting for admin review)
+        documentType,          // document_type
+        documentUrl,           // document_url
+        documentPublicId,      // document_public_id (matches your column name)
+        false                  // admin_approved (waiting for admin approval)
+      ]
+    );
+
+    if (insertResult.rowCount === 0) {
+      // Delete uploaded file if database insert failed
+      if (documentPublicId) {
+        try {
+          await cloudinary.uploader.destroy(documentPublicId);
+        } catch (deleteError) {
+          console.error('Failed to delete uploaded file after DB error:', deleteError);
+        }
+      }
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to create account. Please try again.'
+      });
+    }
+
+    const newTenant = insertResult.rows[0];
+
+    // Send notification email to admin (optional)
+    try {
+      const adminNotificationEmail = {
+        from: process.env.EMAIL_USER,
+        to: process.env.ADMIN_EMAIL || process.env.EMAIL_USER,
+        subject: 'New Tenant Registration - Document Review Required',
+        text: `A new tenant has registered and uploaded documents for review.
+
+Tenant Details:
+Name: ${name}
+Email: ${emailLower}
+Phone: ${phone}
+Document Type: ${documentType}
+Tenancy ID: ${tenancyId}
+
+Please review the documents and approve/reject the application.
+
+Document URL: ${documentUrl}
+
+Best regards,
+Tenancy App System`
+      };
+      
+      await sendEmail(adminNotificationEmail);
+      console.log('✅ Admin notification email sent');
+    } catch (emailError) {
+      console.error('❌ Failed to send admin notification:', emailError);
+      // Don't fail the registration if email fails
+    }
+
+    console.log(`✅ Tenant registration with document successful: ${emailLower} | Tenancy ID: ${tenancyId}`);
+    
+    return res.status(201).json({ 
+      success: true,
+      message: 'Registration successful! Your documents have been uploaded for admin review. You will receive an email once approved.',
+      tenantId: newTenant.id,
+      tenancyId: newTenant.tenancy_id,
+      documentUploaded: true
+    });
+    
+  } catch (err) {
+    console.error('💥 Tenant registration with document error:', err);
+    
+    // Clean up uploaded file on error
+    if (req.file && req.file.public_id) {
+      try {
+        await cloudinary.uploader.destroy(req.file.public_id);
+        console.log('🗑️ Cleaned up uploaded file after error');
+      } catch (deleteError) {
+        console.error('Failed to cleanup uploaded file:', deleteError);
+      }
+    }
+    
+    // Handle specific database errors
+    if (err.code === '23505') { // PostgreSQL unique violation
+      if (err.constraint && err.constraint.includes('email')) {
+        return res.status(409).json({
+          success: false,
+          message: 'Email already registered. Please use a different email or login instead.'
+        });
+      }
+    }
+    
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Registration failed. Please try again.' 
+    });
   }
 });
 
