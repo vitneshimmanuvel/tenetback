@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const app = express();
 const PORT = process.env.PORT || 3001;
-
+const path = require('path');
 app.use(cors());
 app.use(bodyParser.json());
 
@@ -47,17 +47,46 @@ console.log('🌤️  Cloudinary Config:', {
 });
 
 // Configure Cloudinary storage for multer
+// CORRECTED Cloudinary storage configuration
+// CORRECTED Cloudinary storage configuration
+// CORRECTED Cloudinary storage configuration
+// CORRECTED Cloudinary storage configuration
+// ✅ IMPROVED: Cloudinary storage configuration
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
-    folder: 'tenant_documents', // Folder name in Cloudinary
-    allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'], // Allowed file types
-    resource_type: 'auto', // Automatically detect file type
-    transformation: [{ width: 1000, height: 1000, crop: 'limit' }], // Optional: resize images
+    folder: 'tenant_documents',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'pdf', 'doc', 'docx'],
+    resource_type: (req, file) => {
+      const fileExtension = file.originalname.toLowerCase().split('.').pop();
+      console.log(`📄 Processing file: ${file.originalname} | Extension: ${fileExtension}`);
+      
+      if (['pdf', 'doc', 'docx'].includes(fileExtension)) {
+        console.log('📋 Using RAW resource type for documents');
+        return 'raw';
+      }
+      console.log('📋 Using IMAGE resource type');
+      return 'image';
+    },
+    access_mode: 'public', // ✅ CRITICAL: Ensure public access
+    use_filename: true,
+    unique_filename: true,
+    // ✅ IMPROVED: Better public_id generation to avoid conflicts
+    public_id: (req, file) => {
+      const timestamp = Date.now();
+      const randomId = Math.random().toString(36).substring(2, 8);
+      const originalName = file.originalname.split('.')[0].replace(/[^a-zA-Z0-9]/g, '_');
+      return `${originalName}_${timestamp}_${randomId}`;
+    }
   },
 });
 
+
+
+
+
 // Configure multer with Cloudinary storage
+// CORRECTED file filter
 const upload = multer({ 
   storage: storage,
   limits: {
@@ -67,18 +96,34 @@ const upload = multer({
     console.log('📎 File upload attempt:', {
       fieldname: file.fieldname,
       originalname: file.originalname,
-      mimetype: file.mimetype,
-      size: file.size
+      mimetype: file.mimetype
     });
     
-    // Check file type
-    if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+    const fileExtension = file.originalname.toLowerCase().split('.').pop();
+    const allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'pdf', 'doc', 'docx'];
+    
+    // CORRECTED: More flexible mimetype checking
+    const allowedMimeTypes = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/octet-stream' // For some browsers that don't set proper mimetype
+    ];
+    
+    const isValidExtension = allowedExtensions.includes(fileExtension);
+    const isValidMimeType = allowedMimeTypes.includes(file.mimetype);
+    
+    if (isValidExtension || isValidMimeType) {
+      console.log('✅ File accepted:', file.originalname);
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only images and PDFs are allowed.'), false);
+      console.log('❌ File rejected:', file.originalname, 'mimetype:', file.mimetype, 'extension:', fileExtension);
+      cb(new Error(`Invalid file type. Only images and documents (PDF, DOC, DOCX) are allowed.`), false);
     }
   }
 });
+
 
 // Add error handling middleware for multer
 app.use((error, req, res, next) => {
@@ -106,7 +151,82 @@ app.use((error, req, res, next) => {
   
   next(error);
 });
+// ✅ HELPER FUNCTION: Process document URLs correctly
+// ✅ HELPER FUNCTION: Process document URLs correctly
+// ✅ FIXED: Process document URLs correctly - NO MORE CONCATENATION
+function processDocumentUrl(file, originalName) {
+  if (!file || !file.path) return null;
+  
+  // ✅ CRITICAL: Use the complete URL from Cloudinary, not concatenated parts
+  let documentUrl = file.secure_url || file.path; // Use secure HTTPS URL
+  
+  const fileExtension = originalName.toLowerCase().split('.').pop();
+  
+  console.log(`📄 Processing document URL:`, {
+    originalPath: file.path,
+    secureUrl: file.secure_url,
+    publicId: file.public_id,
+    extension: fileExtension
+  });
+  
+  // ✅ Validate URL format to prevent concatenation issues
+  if (!documentUrl.startsWith('https://res.cloudinary.com/')) {
+    console.error('❌ Invalid Cloudinary URL format:', documentUrl);
+    return null;
+  }
+  
+  // ✅ Add optimizations based on file type WITHOUT breaking the URL
+  try {
+    if (['pdf', 'doc', 'docx'].includes(fileExtension)) {
+      // For documents, add viewing optimizations
+      if (documentUrl.includes('/upload/') && !documentUrl.includes('fl_attachment')) {
+        const baseUrl = documentUrl.split('/upload/')[0];
+        const pathPart = documentUrl.split('/upload/')[1];
+        
+        documentUrl = `${baseUrl}/upload/fl_attachment,f_auto,q_auto/${pathPart}`;
+      }
+    } else if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(fileExtension)) {
+      // For images, add optimization
+      if (documentUrl.includes('/upload/') && !documentUrl.includes('c_limit')) {
+        const baseUrl = documentUrl.split('/upload/')[0];
+        const pathPart = documentUrl.split('/upload/')[1];
+        
+        documentUrl = `${baseUrl}/upload/c_limit,w_1920,h_1080,f_auto,q_auto/${pathPart}`;
+      }
+    }
+  } catch (error) {
+    console.error('❌ URL processing error:', error);
+    // Return original URL if processing fails
+    documentUrl = file.secure_url || file.path;
+  }
+  
+  console.log(`✅ Final processed URL: ${documentUrl}`);
+  return documentUrl;
+}
 
+
+async function cleanupUploadedFiles(files) {
+  if (!files) return;
+  
+  console.log('🗑️ Cleaning up uploaded files...');
+  
+  for (const [fieldName, fileArray] of Object.entries(files)) {
+    for (const file of fileArray) {
+      if (file.public_id) {
+        try {
+          // Determine resource type for deletion
+          const fileExtension = file.originalname?.toLowerCase().split('.').pop() || '';
+          const resourceType = ['pdf', 'doc', 'docx'].includes(fileExtension) ? 'raw' : 'image';
+          
+          await cloudinary.uploader.destroy(file.public_id, { resource_type: resourceType });
+          console.log(`✅ Cleaned up file: ${file.public_id} (${resourceType})`);
+        } catch (deleteError) {
+          console.error(`❌ Failed to cleanup file ${file.public_id}:`, deleteError);
+        }
+      }
+    }
+  }
+}
 
 // Enhanced nodemailer configuration
 const createTransporter = () => {
@@ -186,6 +306,55 @@ const findUser = async (email) => {
   }
 };
 
+
+const sendAdminNotification = async (name, email, phone, tenancyId, documentData) => {
+  try {
+    // Count uploaded documents
+    const documentCount = Object.keys(documentData).filter(key => 
+      key.includes('_url') && documentData[key] && documentData[key] !== ''
+    ).length / 4;
+
+    // Create document summary
+    const documentSummary = [];
+    for (let i = 1; i <= 4; i++) {
+      const type = documentData[`document${i}_type`];
+      const url = documentData[`document${i}_url`];
+      if (type && url) {
+        documentSummary.push(`Document ${i}: ${type}`);
+      }
+    }
+
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: process.env.ADMIN_EMAIL || process.env.EMAIL_USER,
+      subject: 'New Tenant Registration - Document Review Required',
+      text: `A new tenant has registered and uploaded documents for review.
+
+Tenant Details:
+Name: ${name}
+Email: ${email}
+Phone: ${phone}
+Tenancy ID: ${tenancyId}
+
+Documents Uploaded:
+${documentSummary.join('\n')}
+
+Please log in to the admin panel to review and approve/reject the application.
+
+Best regards,
+Tenancy App System`
+    };
+
+    await sendEmail(mailOptions);
+    console.log('✅ Admin notification email sent');
+  } catch (emailError) {
+    console.error('❌ Failed to send admin notification:', emailError);
+    // Don't fail the registration if admin email fails
+  }
+};
+
+
+
 // ===================== ADMIN ENDPOINTS =====================
 
 // Admin registration
@@ -232,8 +401,10 @@ app.post('/api/admin/register', async (req, res) => {
     res.status(500).json({ error: 'Registration failed. Please check email configuration.' });
   }
 });
+// ✅ IMPROVED: Helper function to clean up uploaded files
 
-// Admin login - CORRECTED RESPONSE FORMAT
+
+
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
   
@@ -311,7 +482,236 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
   }
 });
 
-// Get pending property approvals for admin
+// Enhanced tenant registration with 4 documents - CORRECTED VERSION
+// Enhanced tenant registration with 4 documents - CORRECTED VERSION
+// Enhanced tenant registration with 4 documents - NEW ROUTE
+// Enhanced tenant registration with 4 documents - COMPLETE CORRECTED VERSION
+// Enhanced tenant registration with 4 documents - COMPLETE CORRECTED VERSION
+// CORRECTED: Enhanced tenant registration with 4 documents
+// CORRECTED: Enhanced tenant registration with 4 documents
+// COMPLETELY CORRECTED: Enhanced tenant registration with 4 documents
+// ✅ COMPLETE CORRECTED ROUTE: Enhanced tenant registration with 4 documents
+// CORRECTED: Enhanced tenant registration with 4 documents
+// ✅ COMPLETE CORRECTED ROUTE: Enhanced tenant registration with 4 documents
+// ✅ COMPLETELY CORRECTED: Enhanced tenant registration with 4 documents
+// ✅ COMPLETELY CORRECTED: Enhanced tenant registration with 4 documents
+// ✅ CORRECTED: Enhanced tenant registration with proper document handling
+app.post('/api/tenant/register-with-documents', upload.fields([
+  { name: 'document1', maxCount: 1 },
+  { name: 'document2', maxCount: 1 },
+  { name: 'document3', maxCount: 1 },
+  { name: 'document4', maxCount: 1 }
+]), async (req, res) => {
+  console.log('🚀 === TENANT REGISTRATION WITH DOCUMENTS STARTED ===');
+  
+  try {
+    const { name, email, phone, password, document1Type, document2Type, document3Type, document4Type } = req.body;
+    
+    console.log('📋 Registration data:', { name, email, phone });
+    console.log('📄 Document types:', { document1Type, document2Type, document3Type, document4Type });
+    console.log('📎 Files received:', req.files ? Object.keys(req.files) : 'None');
+    
+    // Validate required fields
+    if (!name || !email || !phone || !password) {
+      await cleanupUploadedFiles(req.files);
+      return res.status(400).json({
+        success: false,
+        message: 'Please fill all required fields'
+      });
+    }
+    
+    // Validate mandatory document
+    if (!req.files || !req.files['document1'] || req.files['document1'].length === 0) {
+      await cleanupUploadedFiles(req.files);
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload the mandatory document (Document 1)'
+      });
+    }
+    
+    const emailLower = email.toLowerCase();
+    const existingUser = await findUser(emailLower);
+    if (existingUser) {
+      await cleanupUploadedFiles(req.files);
+      return res.status(409).json({
+        success: false,
+        message: 'Email already registered. Please use a different email or login instead.'
+      });
+    }
+    
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const tenancyId = Math.floor(10000000 + Math.random() * 90000000).toString();
+    
+    // ✅ CRITICAL FIX: Process documents with clean URL extraction
+    const documentData = {};
+    const documentTypes = [document1Type, document2Type, document3Type, document4Type];
+    
+    for (let i = 1; i <= 4; i++) {
+      const docKey = `document${i}`;
+      const typeValue = documentTypes[i - 1];
+      
+      if (req.files && req.files[docKey] && req.files[docKey].length > 0) {
+        const file = req.files[docKey][0];
+        
+        // ✅ CRITICAL: Use the helper function to get clean URL
+        const processedUrl = processDocumentUrl(file, file.originalname);
+        
+        if (processedUrl) {
+          documentData[`document${i}_type`] = typeValue || null;
+          documentData[`document${i}_url`] = processedUrl; // ✅ Clean, public URL
+          documentData[`document${i}_public_id`] = file.public_id; // ✅ Store separately for deletion
+          documentData[`document${i}_mandatory`] = (i === 1);
+          
+          console.log(`✅ Document ${i} processed successfully:`, {
+            type: documentData[`document${i}_type`],
+            url: documentData[`document${i}_url`],
+            publicId: documentData[`document${i}_public_id`],
+            fileSize: `${(file.size / 1024).toFixed(2)} KB`
+          });
+        } else {
+          // If URL processing failed, cleanup and return error
+          await cleanupUploadedFiles(req.files);
+          return res.status(500).json({
+            success: false,
+            message: `Failed to process document ${i}. Please try again.`
+          });
+        }
+      } else {
+        documentData[`document${i}_type`] = null;
+        documentData[`document${i}_url`] = null;
+        documentData[`document${i}_public_id`] = null;
+        documentData[`document${i}_mandatory`] = (i === 1);
+      }
+    }
+    
+    // ✅ Insert tenant with documents
+    const insertResult = await pool.query(
+      `INSERT INTO tenants (
+        name, email, phone, password_hash, tenancy_id, role, verified, 
+        average_rating, total_ratings, admin_verified, admin_approved,
+        document1_type, document1_url, document1_public_id, document1_mandatory,
+        document2_type, document2_url, document2_public_id, document2_mandatory,
+        document3_type, document3_url, document3_public_id, document3_mandatory,
+        document4_type, document4_url, document4_public_id, document4_mandatory,
+        created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, CURRENT_TIMESTAMP)
+       RETURNING id, tenancy_id`,
+      [
+        name, emailLower, phone, hashedPassword, tenancyId, 'tenant', true, 0.0, 0, false, false,
+        documentData.document1_type, documentData.document1_url, documentData.document1_public_id, documentData.document1_mandatory,
+        documentData.document2_type, documentData.document2_url, documentData.document2_public_id, documentData.document2_mandatory,
+        documentData.document3_type, documentData.document3_url, documentData.document3_public_id, documentData.document3_mandatory,
+        documentData.document4_type, documentData.document4_url, documentData.document4_public_id, documentData.document4_mandatory
+      ]
+    );
+
+    const newTenant = insertResult.rows[0];
+    
+    // Send admin notification
+    await sendAdminNotification(name, emailLower, phone, tenancyId, documentData);
+    
+    console.log(`✅ REGISTRATION SUCCESSFUL: ${emailLower} | Tenancy ID: ${tenancyId}`);
+    
+    return res.status(201).json({ 
+      success: true,
+      message: 'Registration successful! Your documents have been uploaded for admin review.',
+      tenantId: newTenant.id,
+      tenancyId: newTenant.tenancy_id,
+      documentsUploaded: Object.keys(req.files || {}).length
+    });
+    
+  } catch (err) {
+    console.error('💥 REGISTRATION ERROR:', err);
+    await cleanupUploadedFiles(req.files);
+    
+    return res.status(500).json({ 
+      success: false, 
+      message: `Registration failed: ${err.message}` 
+    });
+  }
+});
+
+
+// Helper function to clean up uploaded files
+
+
+
+// Helper function to clean up uploaded files
+
+
+
+
+// Debug endpoint to test Cloudinary
+app.get('/api/debug/cloudinary-test', async (req, res) => {
+  try {
+    console.log('🌤️ Cloudinary Configuration:');
+    console.log('   - Cloud Name:', process.env.CLOUD_NAME ? '✅ Set' : '❌ Missing');
+    console.log('   - API Key:', process.env.CLOUDINARY_KEY ? '✅ Set' : '❌ Missing');
+    console.log('   - API Secret:', process.env.CLOUDINARY_SECRET ? '✅ Set' : '❌ Missing');
+    
+    // Test Cloudinary connection
+    const testResult = await cloudinary.api.ping();
+    
+    res.json({
+      cloudinaryConfigured: !!(process.env.CLOUD_NAME && process.env.CLOUDINARY_KEY && process.env.CLOUDINARY_SECRET),
+      cloudinaryConnection: testResult,
+      multerConfigured: true,
+      storageType: 'CloudinaryStorage'
+    });
+  } catch (error) {
+    console.error('❌ Cloudinary test failed:', error);
+    res.status(500).json({
+      error: 'Cloudinary test failed',
+      details: error.message
+    });
+  }
+});
+
+// Debug endpoint to check document URLs
+app.get('/api/admin/debug-document-urls', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id, name, email,
+        document1_type, 
+        document1_url,
+        LENGTH(document1_url) as doc1_url_length,
+        document2_type,
+        document2_url,
+        LENGTH(document2_url) as doc2_url_length,
+        document3_type,
+        document3_url, 
+        LENGTH(document3_url) as doc3_url_length,
+        document4_type,
+        document4_url,
+        LENGTH(document4_url) as doc4_url_length
+      FROM tenants 
+      WHERE admin_approved = false
+      ORDER BY created_at DESC
+      LIMIT 5
+    `);
+    
+    res.json({ 
+      message: 'Debug: Document URL analysis',
+      tenants: result.rows.map(tenant => ({
+        ...tenant,
+        analysis: {
+          doc1_is_url: tenant.document1_url ? tenant.document1_url.startsWith('https://') : false,
+          doc1_is_boolean_string: tenant.document1_url === 'true' || tenant.document1_url === 'false',
+          doc2_is_url: tenant.document2_url ? tenant.document2_url.startsWith('https://') : false,
+          doc2_is_boolean_string: tenant.document2_url === 'true' || tenant.document2_url === 'false'
+        }
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Debug failed' });
+  }
+});
+
+
+
+
+
 app.get('/api/admin/pending-properties', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -494,14 +894,35 @@ Tenancy App Team`
       console.log(`Tenant ${id} approved successfully`);
       
     } else {
-      // REJECT: Get tenant info before deletion
+      // REJECT: Get tenant info AND document IDs before deletion
       const tenantResult = await pool.query(
-        'SELECT name, email FROM tenants WHERE id = $1',
+        `SELECT name, email,
+         document1_public_id, document2_public_id, document3_public_id, document4_public_id
+         FROM tenants WHERE id = $1`,
         [id]
       );
       
       if (tenantResult.rows.length > 0) {
         const tenant = tenantResult.rows[0];
+        
+        // CLEANUP: Delete all documents from Cloudinary
+        const documentIds = [
+          tenant.document1_public_id,
+          tenant.document2_public_id, 
+          tenant.document3_public_id,
+          tenant.document4_public_id
+        ].filter(id => id && id.trim() !== '');
+
+        console.log(`🗑️ Cleaning up ${documentIds.length} documents from Cloudinary`);
+        
+        for (const publicId of documentIds) {
+          try {
+            await cloudinary.uploader.destroy(publicId);
+            console.log(`✅ Deleted document: ${publicId}`);
+          } catch (deleteError) {
+            console.error(`❌ Failed to delete document ${publicId}:`, deleteError);
+          }
+        }
         
         // Send rejection email BEFORE deletion
         try {
@@ -536,14 +957,16 @@ Tenancy App Team`
         }
       }
       
-      // Delete tenant completely
+      // Delete tenant completely from database
       await pool.query('DELETE FROM tenants WHERE id = $1', [id]);
-      console.log(`Tenant ${id} rejected and deleted from database`);
+      console.log(`Tenant ${id} rejected, documents cleaned up, and removed from database`);
     }
     
     res.json({ 
       success: true, 
-      message: approve ? 'Tenant approved and notification sent' : 'Tenant rejected and removed from system' 
+      message: approve 
+        ? 'Tenant approved and notification sent' 
+        : 'Tenant rejected, documents cleaned up, and removed from system' 
     });
     
   } catch (err) {
@@ -1720,26 +2143,241 @@ app.post('/api/auth/login', async (req, res) => {
 // Get pending tenant verifications - ONLY TENANTS WITH DOCUMENTS
 // Get pending tenant verifications - ONLY TENANTS WITH DOCUMENTS
 // REPLACE your /api/admin/pending-tenants endpoint with this:
+// CORRECTED: Get pending tenants with documents
+// ✅ CORRECTED: Get pending tenants with proper document filtering
 app.get('/api/admin/pending-tenants', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        id, name, email, phone, tenancy_id, 
-        document_type, document_url, created_at, verified, admin_approved
+        id, name, email, phone, tenancy_id, created_at, verified, admin_approved,
+        document1_type, document1_url, document1_public_id, document1_mandatory,
+        document2_type, document2_url, document2_public_id, document2_mandatory,
+        document3_type, document3_url, document3_public_id, document3_mandatory,
+        document4_type, document4_url, document4_public_id, document4_mandatory
       FROM tenants 
       WHERE admin_approved = false
-        AND document_url IS NOT NULL 
-        AND document_url != ''
-        AND document_type IS NOT NULL
-        AND document_type != ''
+        AND verified = true  
+        AND (
+          (document1_url IS NOT NULL AND document1_url != '' AND document1_url NOT IN ('t', 'f', 'true', 'false')) OR
+          (document2_url IS NOT NULL AND document2_url != '' AND document2_url NOT IN ('t', 'f', 'true', 'false')) OR
+          (document3_url IS NOT NULL AND document3_url != '' AND document3_url NOT IN ('t', 'f', 'true', 'false')) OR
+          (document4_url IS NOT NULL AND document4_url != '' AND document4_url NOT IN ('t', 'f', 'true', 'false'))
+        )
       ORDER BY created_at DESC
     `);
     
-    console.log(`Found ${result.rows.length} tenants pending admin verification with documents`);
-    res.json({ tenants: result.rows });
+    console.log(`Found ${result.rows.length} tenants pending admin verification with valid documents`);
+    
+    // ✅ Process URLs to ensure they're properly formatted
+    const processedTenants = result.rows.map(tenant => {
+      const processed = { ...tenant };
+      
+      // Fix any malformed document URLs
+      for (let i = 1; i <= 4; i++) {
+        const urlKey = `document${i}_url`;
+        if (processed[urlKey] && typeof processed[urlKey] === 'string') {
+          // Ensure PDF URLs have correct format
+          if (processed[urlKey].includes('.pdf') && processed[urlKey].includes('cloudinary.com')) {
+            // Fix PDF URLs that might be malformed
+            if (processed[urlKey].includes('/image/upload/')) {
+              processed[urlKey] = processed[urlKey].replace('/image/upload/', '/raw/upload/fl_attachment,f_auto,q_auto/');
+            }
+          }
+        }
+      }
+      
+      return processed;
+    });
+    
+    res.json({ tenants: processedTenants });
   } catch (err) {
     console.error('Get pending tenants error:', err);
     res.status(500).json({ error: 'Failed to get pending tenants', tenants: [] });
+  }
+});
+
+// CORRECTED: Verify tenant endpoint
+app.post('/api/admin/verify-tenant/:id', async (req, res) => {
+  const { id } = req.params;
+  const { approve } = req.body;
+  
+  try {
+    if (approve) {
+      // APPROVE: Set admin_approved = true
+      const tenantResult = await pool.query(
+        'SELECT name, email FROM tenants WHERE id = $1',
+        [id]
+      );
+      
+      if (tenantResult.rows.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Tenant not found' 
+        });
+      }
+
+      const tenant = tenantResult.rows[0];
+
+      // Update tenant to approved
+      await pool.query('UPDATE tenants SET admin_approved = true WHERE id = $1', [id]);
+      
+      // Send approval email
+      try {
+        const mailOptions = {
+          from: process.env.EMAIL_USER,
+          to: tenant.email,
+          subject: 'Account Approved - Welcome to Tenancy App!',
+          text: `Dear ${tenant.name},
+
+Congratulations! Your tenant account has been approved by our admin team.
+
+Your verification documents have been successfully reviewed and accepted.
+
+You can now:
+- Log in to your tenant dashboard
+- View your rating history  
+- Update your profile
+
+Welcome to Tenancy App!
+
+Best regards,
+Tenancy App Team`
+        };
+        
+        await sendEmail(mailOptions);
+        console.log(`✅ Tenant approval email sent to ${tenant.email}`);
+      } catch (emailError) {
+        console.error('❌ Failed to send approval email:', emailError);
+      }
+      
+      console.log(`Tenant ${id} approved successfully`);
+      
+    } else {
+      // REJECT: Get tenant info AND document IDs before deletion
+      const tenantResult = await pool.query(
+        `SELECT name, email,
+         document1_public_id, document2_public_id, document3_public_id, document4_public_id
+         FROM tenants WHERE id = $1`,
+        [id]
+      );
+      
+      if (tenantResult.rows.length > 0) {
+        const tenant = tenantResult.rows[0];
+        
+        // CLEANUP: Delete all documents from Cloudinary
+        const documentIds = [
+          tenant.document1_public_id,
+          tenant.document2_public_id, 
+          tenant.document3_public_id,
+          tenant.document4_public_id
+        ].filter(id => id && id.trim() !== '');
+
+        console.log(`🗑️ Cleaning up ${documentIds.length} documents from Cloudinary`);
+        
+        for (const publicId of documentIds) {
+          try {
+            await cloudinary.uploader.destroy(publicId);
+            console.log(`✅ Deleted document: ${publicId}`);
+          } catch (deleteError) {
+            console.error(`❌ Failed to delete document ${publicId}:`, deleteError);
+          }
+        }
+        
+        // Send rejection email BEFORE deletion
+        try {
+          const mailOptions = {
+            from: process.env.EMAIL_USER,
+            to: tenant.email,
+            subject: 'Tenancy App Registration Declined',
+            text: `Dear ${tenant.name},
+
+We regret to inform you that your tenant account registration has been declined.
+
+This decision was made after reviewing your verification documents. The documents may not meet our verification requirements.
+
+Possible reasons:
+- Document quality issues
+- Information mismatch
+- Incomplete documentation
+- Policy requirements not met
+
+If you believe this is an error or would like to reapply with updated documents, please register again with clear, valid identification documents.
+
+Thank you for your interest in Tenancy App.
+
+Best regards,
+Tenancy App Team`
+          };
+          
+          await sendEmail(mailOptions);
+          console.log(`✅ Tenant rejection email sent to ${tenant.email}`);
+        } catch (emailError) {
+          console.error('❌ Failed to send rejection email:', emailError);
+        }
+      }
+      
+      // Delete tenant completely from database
+      await pool.query('DELETE FROM tenants WHERE id = $1', [id]);
+      console.log(`Tenant ${id} rejected, documents cleaned up, and removed from database`);
+    }
+    
+    res.json({ 
+      success: true, 
+      message: approve 
+        ? 'Tenant approved and notification sent' 
+        : 'Tenant rejected, documents cleaned up, and removed from system' 
+    });
+    
+  } catch (err) {
+    console.error('Verify tenant error:', err);
+    res.status(500).json({ error: 'Failed to process tenant verification' });
+  }
+});
+// Add this to your backend for debugging
+app.get('/api/debug/system-status', async (req, res) => {
+  try {
+    const cloudinaryStatus = {
+      configured: !!(process.env.CLOUD_NAME && process.env.CLOUDINARY_KEY && process.env.CLOUDINARY_SECRET),
+      cloudName: process.env.CLOUD_NAME ? 'SET' : 'MISSING',
+      apiKey: process.env.CLOUDINARY_KEY ? 'SET' : 'MISSING',
+      apiSecret: process.env.CLOUDINARY_SECRET ? 'SET' : 'MISSING'
+    };
+
+    const dbStatus = await pool.query('SELECT COUNT(*) FROM tenants WHERE admin_approved = false');
+    const pendingCount = parseInt(dbStatus.rows[0].count);
+
+    res.json({
+      cloudinary: cloudinaryStatus,
+      database: 'Connected',
+      pendingTenants: pendingCount,
+      serverTime: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Debug endpoint - ADD THIS TEMPORARILY
+app.get('/api/admin/debug-tenants', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id, name, email, admin_approved, verified,
+        document1_type, document1_url,
+        document2_type, document2_url,
+        document3_type, document3_url,
+        document4_type, document4_url
+      FROM tenants 
+      ORDER BY created_at DESC
+      LIMIT 5
+    `);
+    
+    res.json({ 
+      message: 'Debug data for tenants',
+      tenants: result.rows 
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Debug failed' });
   }
 });
 
