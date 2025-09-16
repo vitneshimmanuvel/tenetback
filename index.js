@@ -3062,7 +3062,7 @@
         LIMIT 2
       `, [id]);
       
-      // Calculate summary statistics from ALL ratings (for display)
+    
       const summaryResult = await pool.query(`
         SELECT 
           COUNT(tr.id) as total_ratings,
@@ -3087,8 +3087,8 @@
           ...tenantResult.rows[0],
           ...summaryResult.rows[0]
         },
-        ratings: ratingsResult.rows, // Only last 2 ratings for popup
-        lastTwoStays: ratingsResult.rows // Same as ratings for this use case
+        ratings: ratingsResult.rows, 
+        lastTwoStays: ratingsResult.rows 
       });
     } catch (err) {
       console.error('Get tenant ratings error:', err);
