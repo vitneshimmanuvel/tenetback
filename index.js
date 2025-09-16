@@ -3120,7 +3120,7 @@
     console.log('POST /api/auth/send-otp - Send OTP');
     console.log('POST /api/auth/verify-otp - Verify OTP (supports tenant_register)');
     console.log('POST /api/auth/reset-password - Reset password');
-    
+    console.log('GET /api/auth/profile/:role/:id - Get user profile');
     console.log('\n👨‍💼 ADMIN ENDPOINTS:');
     console.log('POST /api/admin/register - Admin registration');
     console.log('POST /api/admin/login - Admin login');
